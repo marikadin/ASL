@@ -1,46 +1,43 @@
 import cv2
-import numpy as np
-import os
-from matplotlib import pyplot as plt
-import time
-import mediapipe as mp
 
-for action in actions:
-    for sequance in range(no_sequances):
-        try:
-            os.makedirs(os.path.join(DATA_PATH,action,str(sequance)))
-        except:
-            pass
+def change_video_speed(input_path, output_path, target_fps=30, target_duration=1.0):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print("Error: Could not open video.")
+        return
 
-cap = cv2.VideoCapture(0)
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    original_duration = frame_count / original_fps
 
-with mp_holistic.Holistic(min_detection_confidence = 0.5, min_tracking_confidence = 0.5) as holistic:    
-    for action in actions:
-        for sequance in range(no_sequances):
-            for frame_num in range(sequance_length):
-                ret, frame = cap.read()
-                frame = cv2.flip(frame,1)
-                image, results = mediapipe_detection(frame, holistic)
+    speed_factor = original_duration / target_duration
 
-                draw_styled_landmarks(image, results)
-                
-                if frame_num == 0:
-                    cv2.putText(image,'STARTING COLLECTION',(120,200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 4, cv2.LINE_AA)
-                    cv2.putText(image,f'collecting frames for {action} video number {sequance}',(15,12),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.5, (0,0,255), 1, cv2.LINE_AA)
-                    cv2.waitKey(500)
-                else:
-                    cv2.putText(image,f'collecting frames for {action} video number {sequance}',(15,12),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.5, (0,0,255), 1, cv2.LINE_AA)                    
-                
-                keypoints = extract_keypoints(results)
-                npy_path = os.path.join(DATA_PATH, action, str(sequance),str(frame_num))
-                np.save(npy_path,keypoints)
-                cv2.imshow('Camera Video', image)
-                
-                if cv2.waitKey(10) & 0xFF == ord('q'):
-                    break
-    
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, target_fps, (width, height))
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
     cap.release()
-    cv2.destroyAllWindows()
+
+    # Calculate new frame count: 30 frames for 1 second
+    new_frame_count = int(target_fps * target_duration)
+
+    for i in range(new_frame_count):
+        # Map output frame index to original frame index
+        original_frame_index = int(i * speed_factor)
+        if original_frame_index >= len(frames):
+            original_frame_index = len(frames) - 1
+        out.write(frames[original_frame_index])
+
+    out.release()
+    print(f"Video saved to {output_path}")
+
+# Example usage
+change_video_speed('input.mp4', 'output_1sec.mp4')
