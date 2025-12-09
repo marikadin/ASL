@@ -8,6 +8,8 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Input
 from tensorflow.keras.callbacks import TensorBoard
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+import random
 
 # Mediapipe setup
 mp_holistic = mp.solutions.holistic
@@ -107,49 +109,177 @@ class DataCollector:
         cap.release()
         cv2.destroyAllWindows()
 
+
 class ActionModel:
-    def __init__(self, actions, sequence_length=30, data_path='MP_DATA'):
-        self.actions = actions
+    def __init__(self, sequence_length=30, data_path='DATA_KEYPOINTS', batch_size=32):
         self.sequence_length = sequence_length
         self.data_path = data_path
-        self.label_map = {label: num for num, label in enumerate(actions)}
+        self.batch_size = batch_size
 
-    def load_data(self):
-        sequences, labels = [], []
-        for action in self.actions:
-            for sequence in range(30):
-                window = []
-                for frame_num in range(self.sequence_length):
-                    path = os.path.join(self.data_path, action, str(sequence), f"{frame_num}.npy")
-                    if not os.path.exists(path):
-                        raise FileNotFoundError(f"Missing file: {path}")
-                    window.append(np.load(path))
-                sequences.append(window)
-                labels.append(self.label_map[action])
-        X = np.array(sequences)
-        y = to_categorical(labels).astype(int)
-        return train_test_split(X, y, test_size=0.05)
+        # Detect labels
+        self.actions = np.array(sorted([
+            d for d in os.listdir(self.data_path)
+            if os.path.isdir(os.path.join(self.data_path, d))
+        ]))
+        print("Detected actions (count):", len(self.actions))
 
+        # Label → number
+        self.label_map = {label: idx for idx, label in enumerate(self.actions)}
+
+        # Build sequence list once
+        self.all_sequences = self._index_dataset()
+        print(f"Total sequences indexed: {len(self.all_sequences)}")
+
+        # Split train/test (lists of tuples (action, seq_path))
+        self.train_seqs, self.test_seqs = train_test_split(
+            self.all_sequences, test_size=0.05, shuffle=True
+        )
+
+        print(f"Train sequences: {len(self.train_seqs)}")
+        print(f"Test sequences:  {len(self.test_seqs)}\n")
+
+    # ---------------------------------------------------------
+    # Build index: list of (action, sequence_path)
+    # ---------------------------------------------------------
+    def _index_dataset(self):
+        index = []
+        from tqdm import tqdm
+
+        print("Indexing dataset...")
+        for action in tqdm(self.actions):
+            action_folder = os.path.join(self.data_path, action)
+            try:
+                seq_folders = sorted(os.listdir(action_folder))
+            except FileNotFoundError:
+                continue
+
+            for seq in seq_folders:
+                seq_path = os.path.join(action_folder, seq)
+                # guard: must be a folder and contain at least sequence_length files
+                if os.path.isdir(seq_path):
+                    try:
+                        if len([f for f in os.listdir(seq_path) if f.endswith('.npy')]) >= self.sequence_length:
+                            index.append((action, seq_path))
+                    except Exception:
+                        # ignore unreadable folders
+                        continue
+        return index
+
+    # ---------------------------------------------------------
+    # Generator – loads batch sequences on demand
+    # - Shuffles order at each epoch pass
+    # ---------------------------------------------------------
+    def generator(self, sequence_list):
+        num_classes = len(self.actions)
+        seqs = list(sequence_list)
+
+        while True:
+            # shuffle each epoch to avoid same-order bias
+            random.shuffle(seqs)
+            X_batch, y_batch = [], []
+
+            for action, seq_path in seqs:
+                frames = []
+                # load exactly sequence_length frames; if missing -> pad with zeros
+                for i in range(self.sequence_length):
+                    npy_path = os.path.join(seq_path, f"{i}.npy")
+                    if os.path.exists(npy_path):
+                        frames.append(np.load(npy_path))
+                    else:
+                        frames.append(np.zeros(1662, dtype=np.float32))
+
+                X_batch.append(frames)
+                y_batch.append(self.label_map[action])
+
+                if len(X_batch) == self.batch_size:
+                    yield (
+                        np.array(X_batch, dtype=np.float32),
+                        to_categorical(y_batch, num_classes=num_classes)
+                    )
+                    X_batch, y_batch = [], []
+
+            # if there's remainder that didn't make a full batch, yield it too
+            if len(X_batch) > 0:
+                yield (
+                    np.array(X_batch, dtype=np.float32),
+                    to_categorical(y_batch, num_classes=num_classes)
+                )
+
+    # ---------------------------------------------------------
+    # Build LSTM model
+    # ---------------------------------------------------------
     def build_model(self):
-        model = Sequential()
-        model.add(Input(shape=(30, 1662)))
-        model.add(LSTM(64, return_sequences=True, activation='relu'))
-        model.add(LSTM(128, return_sequences=True, activation='relu'))
-        model.add(LSTM(64, return_sequences=False, activation='relu'))
-        model.add(Dense(64, activation='relu'))
-        model.add(Dense(32, activation='relu'))
-        model.add(Dense(self.actions.shape[0], activation='softmax'))
-        model.compile(optimizer='Adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
+        model = Sequential([
+            Input(shape=(self.sequence_length, 1662)),
+            LSTM(64, return_sequences=True, activation='relu'),
+            LSTM(128, return_sequences=True, activation='relu'),
+            LSTM(64, return_sequences=False, activation='relu'),
+            Dense(128, activation='relu'),
+            Dense(64, activation='relu'),
+            Dense(len(self.actions), activation='softmax')
+        ])
+
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['categorical_accuracy']
+        )
+
         return model
 
-    def train(self):
-        X_train, X_test, y_train, y_test = self.load_data()
+    # ---------------------------------------------------------
+    # Train with generator
+    # ---------------------------------------------------------
+    def train(self, epochs=30, use_tensorboard=True, checkpoint_path='checkpoints/action-{epoch:02d}-{val_categorical_accuracy:.3f}.h5'):
+        # Basic checks
+        if len(self.train_seqs) == 0:
+            print("No training sequences found. Abort.")
+            return
+
+        train_gen = self.generator(self.train_seqs)
+        test_gen = self.generator(self.test_seqs) if len(self.test_seqs) > 0 else None
+
+        steps_train = max(1, len(self.train_seqs) // self.batch_size)
+        steps_val = max(1, len(self.test_seqs) // self.batch_size) if test_gen else 0
+
+        print(f"Starting training: epochs={epochs}, steps_per_epoch={steps_train}, val_steps={steps_val}")
+
         model = self.build_model()
-        log_dir = os.path.join('Logs')
-        tb_callback = TensorBoard(log_dir=log_dir)
-        model.fit(X_train, y_train, epochs=200, callbacks=[tb_callback])
-        model.save('action.h5')
-        print("✅ Model trained and saved as 'action.h5'")
+
+        # Callbacks
+        callbacks = []
+        if use_tensorboard:
+            log_dir = os.path.join("Logs", time.strftime("%Y%m%d-%H%M%S"))
+            callbacks.append(TensorBoard(log_dir=log_dir))
+
+        # checkpoint
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        callbacks.append(ModelCheckpoint(filepath=checkpoint_path, save_best_only=False, save_weights_only=False))
+
+        # early stopping to avoid long wasted runs (optional but helpful)
+        callbacks.append(EarlyStopping(monitor='val_categorical_accuracy' if test_gen else 'categorical_accuracy',
+                                       patience=6, restore_best_weights=False, verbose=1))
+
+        try:
+            model.fit(
+                train_gen,
+                validation_data=test_gen,
+                steps_per_epoch=steps_train,
+                validation_steps=steps_val if test_gen else None,
+                epochs=epochs,
+                callbacks=callbacks,
+                verbose=1
+            )
+        except KeyboardInterrupt:
+            print("\nTraining interrupted by user (KeyboardInterrupt). Saving model as 'action_interrupted.h5' ...")
+            model.save('action_interrupted.h5')
+            print("Saved.")
+            return
+
+        model.save("action.h5")
+        print("Model training complete. Saved as 'action.h5'.")
+
+
 
 class LivePredictor:
     def __init__(self, actions, sequence_length=30, threshold=0.6):
@@ -198,6 +328,86 @@ class LivePredictor:
         cap.release()
         cv2.destroyAllWindows()
 
+class SingleVideoCollector:
+    def __init__(self, video_path, action="test", sequence_length=30, save_path="MP_DATA"):
+        self.video_path = video_path
+        self.action = action
+        self.sequence_length = sequence_length
+        self.save_path = save_path
+        self.mp_helper = MediapipeHelper()
+
+        # Create folder MP_DATA/test/0
+        os.makedirs(os.path.join(self.save_path, action, "0"), exist_ok=True)
+
+    def collect(self):
+        cap = cv2.VideoCapture(self.video_path)
+
+        if not cap.isOpened():
+            print(f"❌ Unable to open video: {self.video_path}")
+            return
+
+        sequence = []
+        frame_index = 0
+
+        print("🎥 Starting visual keypoint extraction...\n")
+        print("Press 'q' to quit early.")
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("📌 End of video reached.")
+                break
+
+            # Flip horizontally to match webcam behavior
+            frame = cv2.flip(frame, 1)
+
+            # Detect and draw landmarks
+            image, results = self.mp_helper.detect(frame)
+            self.mp_helper.draw_landmarks(image, results)
+
+            # Extract keypoints for saving
+            keypoints = self.mp_helper.extract_keypoints(results)
+            sequence.append(keypoints)
+
+            # Display frame number
+            cv2.putText(image, f"Frame: {frame_index}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # Show result visually
+            cv2.imshow("Video Keypoint Viewer", image)
+
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                print("⛔ User stopped the process.")
+                break
+
+            frame_index += 1
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+        # Normalize to exactly sequence_length
+        sequence = self._normalize_sequence(sequence)
+
+        # Save frames as .npy
+        for i, frame_keypoints in enumerate(sequence):
+            np.save(os.path.join(self.save_path, self.action, "0", f"{i}.npy"), frame_keypoints)
+
+        print(f"\n✅ Saved {self.sequence_length} keypoint files to: {self.save_path}/{self.action}/0/")
+
+    def _normalize_sequence(self, frames):
+        # Too long → cut
+        if len(frames) >= self.sequence_length:
+            return frames[:self.sequence_length]
+
+        # Too short → pad with zeros
+        missing = self.sequence_length - len(frames)
+        zero_frame = np.zeros(1662)
+        frames.extend([zero_frame] * missing)
+
+        return frames
+
+
+
 if __name__ == "__main__":
     actions = np.array(['hello', 'iloveyou', 'thanks'])
     print("Select mode:")
@@ -207,9 +417,9 @@ if __name__ == "__main__":
     mode = input("Enter 1, 2, or 3: ").strip()
 
     if mode == "1":
-        DataCollector(actions).collect()
+        SingleVideoCollector(video_path="output_1sec.mp4").collect()
     elif mode == "2":
-        ActionModel(actions).train()
+        ActionModel().train()
     elif mode == "3":
         LivePredictor(actions).predict()
     else:
