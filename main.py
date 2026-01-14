@@ -111,7 +111,7 @@ class DataCollector:
 
 
 class ActionModel:
-    def __init__(self, sequence_length=30, data_path='DATA_KEYPOINTS', batch_size=32):
+    def __init__(self, sequence_length=30, data_path=r'D:\OneDrive\DATA_KEYPOINTS', batch_size=32):
         self.sequence_length = sequence_length
         self.data_path = data_path
         self.batch_size = batch_size

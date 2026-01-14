@@ -1,0 +1,70 @@
+┌───────────────────────────────┐
+│          DATASET INFO          
+├───────────────────────────────┤
+│ Total labels        : 2303     
+│ Total categories    : 16       
+│ Category size (target): 150    
+└───────────────────────────────┘
+
+┌───────────────────────────────┐
+│        SEQUENCE STATS          
+├───────────────────────────────
+│ Total sequences     : 83395    
+│ Sequences per label : 1 / 36.21 / 153 
+└───────────────────────────────
+
+┌───────────────────────────────┐
+│          FRAME STATS           │
+├───────────────────────────────┤
+│ Frames per sequence : 30 / 30.0 / 30 │
+└───────────────────────────────┘
+
+┌───────────────────────────────┐
+│         FEATURE STATS          │
+├───────────────────────────────┤
+│ Feature length      : 1662 / 1662.0 / 1662 │
+└───────────────────────────────┘
+
+┌───────────────────────────────┐
+│         CLASS IMBALANCE       |
+├───────────────────────────────┤
+│ Top 10 most common labels:    │
+│ SHAVE: 153                    │
+│ ERASE: 152                    │
+│ PINEAPPLE: 152                │
+│ ENVELOPE: 151                 │
+│ DROWN: 150                    │
+│ CASTLE: 123                   │
+│ CRY: 123                      │
+│ DOG: 123                      │
+│ FLASHLIGHT: 123               │
+│ FORK: 123                     │
+│                               │
+│ Top 10 least common labels:   │
+│ VILLAGE: 29                   │
+│ WEATHER: 29                   │
+│ WORRY: 29                     │
+│ YAY: 29                       │
+│ YEAH: 29                      │
+│ BALL: 28                      │
+│ HANG CLOTHES: 28              │
+│ OUT: 28                       │
+│ ESEEDSOUR: 1                  │
+│ JISAW PUZZLE: 1               │
+└───────────────────────────────┘
+
+┌───────────────────────────────┐
+│        DATASET WARNINGS        
+├───────────────────────────────┤
+│ Sequences shorter than 30     0
+│ Sequences with missing frames 0
+│ Corrupted .npy files          0
+└───────────────────────────────┘
+
+┌───────────────────────────────┐
+│       LABEL QUALITY CHECK     │
+├───────────────────────────────┤
+│ Labels with <10 sequences: 2  │
+│ Examples: ['ESEEDSOUR',       │
+│            'JISAW PUZZLE']    │
+└───────────────────────────────┘
